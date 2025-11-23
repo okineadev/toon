@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.21.0",
   "description": "Token-Oriented Object Notation (TOON) – Compact, human-readable, schema-aware encoding of JSON for LLM prompts",
   "author": "Johann Schopplich <hello@johannschopplich.com>",
+  "funding": "https://github.com/sponsors/toon-format",
   "license": "MIT",
   "homepage": "https://toonformat.dev",
   "repository": {
