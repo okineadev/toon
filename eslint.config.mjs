@@ -6,7 +6,7 @@ export default antfu({
     'no-cond-assign': 'off',
   },
 }).append({
-  files: ['README.md', 'SPEC.md', '**/docs/**/*'],
+  files: ['packages/toon/README.md', 'SPEC.md', '**/docs/**/*'],
   rules: {
     'import/no-duplicates': 'off',
     'style/no-tabs': 'off',
