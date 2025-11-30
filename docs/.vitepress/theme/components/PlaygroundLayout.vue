@@ -7,12 +7,43 @@ import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import { DEFAULT_DELIMITER, encode } from '../../../../packages/toon/src'
 import VPInput from './VPInput.vue'
 
+// Types
 interface PlaygroundState {
   json: string
   delimiter: Delimiter
   indent: number
 }
 
+type PlusOrMinus = '+' | '-'
+
+type CalculatedSavings = {
+  diff: number
+  percent: string
+  sign: PlusOrMinus
+  isSavings: boolean
+} | undefined
+
+interface BaseFormat {
+  id: 'json' | 'yaml' | 'csv' | 'toon'
+  title: string
+  editable: boolean
+  output: string
+  tokens?: number
+}
+
+interface SavingsFormat extends BaseFormat {
+  id: 'yaml' | 'csv' | 'toon'
+  savings: CalculatedSavings
+}
+
+interface JsonFormat extends BaseFormat {
+  id: 'json'
+  savings?: undefined
+}
+
+type Format = JsonFormat | SavingsFormat
+
+// Constants
 const PRESETS = {
   hikes: {
     context: {
@@ -67,60 +98,211 @@ const PRESETS = {
     ],
   },
 } as const
+
 const DELIMITER_OPTIONS: { value: Delimiter, label: string }[] = [
   { value: ',', label: 'Comma (,)' },
   { value: '\t', label: 'Tab (\\t)' },
   { value: '|', label: 'Pipe (|)' },
 ]
+
 const DEFAULT_JSON = JSON.stringify(PRESETS.hikes, undefined, 2)
 
+// State
 const jsonInput = ref(DEFAULT_JSON)
+const yamlInput = ref('')
+const csvInput = ref('')
 const delimiter = ref<Delimiter>(DEFAULT_DELIMITER)
 const indent = ref(2)
 const hasCopiedUrl = ref(false)
+const activeEditor = ref<'json' | 'yaml' | 'csv'>('json')
 
-const tokenizer = shallowRef<typeof import('gpt-tokenizer') | undefined>()
+// Lazy loaded libraries
+const tokenizer = shallowRef<typeof import('gpt-tokenizer')>()
+const yaml = shallowRef<typeof import('yaml')>()
+const papa = shallowRef<typeof import('papaparse')>()
 
-const encodingResult = computed(() => {
+// Computed
+const parsedJson = computed(() => {
   try {
-    const parsedInput = JSON.parse(jsonInput.value)
-    return {
-      output: encode(parsedInput, {
-        indent: indent.value,
-        delimiter: delimiter.value,
-      }),
-      error: undefined,
-    }
+    return { data: JSON.parse(jsonInput.value), error: null }
   }
   catch (e) {
-    return {
-      output: '',
-      error: e instanceof Error ? e.message : 'Invalid JSON',
-    }
+    return { data: null, error: e instanceof Error ? e.message : 'Invalid JSON' }
   }
 })
 
-const toonOutput = computed(() => encodingResult.value.output)
-const error = computed(() => encodingResult.value.error)
-
-const jsonTokens = computed(() =>
-  tokenizer.value?.encode(jsonInput.value).length,
-)
-const toonTokens = computed(() =>
-  tokenizer.value && toonOutput.value ? tokenizer.value.encode(toonOutput.value).length : undefined,
-)
-const tokenSavings = computed(() => {
-  if (!jsonTokens.value || !toonTokens.value)
-    return
-
-  const diff = jsonTokens.value - toonTokens.value
-  const percent = Math.abs((diff / jsonTokens.value) * 100).toFixed(1)
-  const sign = diff > 0 ? '−' : '+'
-
-  return { diff, percent, sign, isSavings: diff > 0 }
+const toonOutput = computed(() => {
+  if (parsedJson.value.error)
+    return ''
+  try {
+    return encode(parsedJson.value.data, {
+      indent: indent.value,
+      delimiter: delimiter.value,
+    })
+  }
+  catch {
+    return ''
+  }
 })
 
-const { copy, copied } = useClipboard({ source: toonOutput })
+const yamlOutput = computed(() => {
+  if (!yaml.value || parsedJson.value.error)
+    return ''
+  try {
+    return yaml.value.stringify(parsedJson.value.data, { indent: indent.value })
+  }
+  catch {
+    return ''
+  }
+})
+
+const csvOutput = computed(() => {
+  if (!papa.value || parsedJson.value.error)
+    return ''
+  try {
+    const array = Array.isArray(parsedJson.value.data)
+      ? parsedJson.value.data
+      : [parsedJson.value.data]
+    return papa.value.unparse(array)
+  }
+  catch {
+    return ''
+  }
+})
+
+function calculateTokens(text: string) {
+  return tokenizer.value?.encode(text).length
+}
+
+const jsonTokens = computed(() => calculateTokens(jsonInput.value))
+const yamlTokens = computed(() => yamlOutput.value ? calculateTokens(yamlOutput.value) : undefined)
+const csvTokens = computed(() => csvOutput.value ? calculateTokens(csvOutput.value) : undefined)
+const toonTokens = computed(() => toonOutput.value ? calculateTokens(toonOutput.value) : undefined)
+
+function calculateSavings(baseTokens?: number, compareTokens?: number) {
+  if (!baseTokens || !compareTokens)
+    return undefined
+
+  const diff = baseTokens - compareTokens
+  const percent = Math.abs((diff / baseTokens) * 100).toFixed(1)
+  const sign: PlusOrMinus = diff > 0 ? '-' : '+'
+
+  return { diff, percent, sign, isSavings: diff > 0 }
+}
+
+const formats = computed((): Format[] => [
+  {
+    id: 'json',
+    title: 'JSON Input',
+    editable: true,
+    output: jsonInput.value,
+    tokens: jsonTokens.value,
+  },
+  {
+    id: 'toon',
+    title: 'TOON Output',
+    editable: false,
+    output: toonOutput.value,
+    tokens: toonTokens.value,
+    savings: calculateSavings(jsonTokens.value, toonTokens.value),
+  },
+  {
+    id: 'yaml',
+    title: 'YAML',
+    editable: true,
+    output: yamlOutput.value,
+    tokens: yamlTokens.value,
+    savings: calculateSavings(jsonTokens.value, yamlTokens.value),
+  },
+  {
+    id: 'csv',
+    title: 'CSV',
+    editable: true,
+    output: csvOutput.value,
+    tokens: csvTokens.value,
+    savings: calculateSavings(jsonTokens.value, csvTokens.value),
+  },
+])
+
+// Clipboard hooks
+const clipboardHooks = {
+  toon: useClipboard({ source: toonOutput }),
+  yaml: useClipboard({ source: yamlOutput }),
+  csv: useClipboard({ source: csvOutput }),
+}
+
+// Methods
+const parseInput = {
+  yaml: (value: string) => {
+    if (!yaml.value)
+      return
+    try {
+      const parsed = yaml.value.parse(value)
+      jsonInput.value = JSON.stringify(parsed, undefined, 2)
+    }
+    catch {}
+  },
+  csv: (value: string) => {
+    if (!papa.value)
+      return
+    try {
+      const result = papa.value.parse(value, {
+        header: true,
+        dynamicTyping: true,
+      })
+      if (result.data) {
+        jsonInput.value = JSON.stringify(result.data, undefined, 2)
+      }
+    }
+    catch {}
+  },
+}
+
+function syncOutputs() {
+  if (activeEditor.value !== 'json' || parsedJson.value.error)
+    return
+
+  if (yaml.value) {
+    yamlInput.value = yaml.value.stringify(parsedJson.value.data, {
+      indent: indent.value,
+    })
+  }
+
+  if (papa.value) {
+    const array = Array.isArray(parsedJson.value.data)
+      ? parsedJson.value.data
+      : [parsedJson.value.data]
+    csvInput.value = papa.value.unparse(array)
+  }
+}
+
+function encodeState(): string {
+  const state: PlaygroundState = {
+    json: jsonInput.value,
+    delimiter: delimiter.value,
+    indent: indent.value,
+  }
+  const compressed = zlibSync(stringToUint8Array(JSON.stringify(state)))
+  return uint8ArrayToBase64(compressed, { urlSafe: true })
+}
+
+function decodeState(hash: string): PlaygroundState | undefined {
+  try {
+    const bytes = base64ToUint8Array(hash)
+    const decompressed = unzlibSync(bytes)
+    const decoded = uint8ArrayToString(decompressed)
+    return decoded ? JSON.parse(decoded) : undefined
+  }
+  catch {
+    return undefined
+  }
+}
+
+const updateUrl = useDebounceFn(() => {
+  if (typeof window === 'undefined')
+    return
+  window.history.replaceState(null, '', `#${encodeState()}`)
+}, 300)
 
 async function copyShareUrl() {
   await navigator.clipboard.writeText(window.location.href)
@@ -128,21 +310,19 @@ async function copyShareUrl() {
   setTimeout(() => (hasCopiedUrl.value = false), 2000)
 }
 
-const updateUrl = useDebounceFn(() => {
-  if (typeof window === 'undefined')
-    return
+function loadPreset(name: keyof typeof PRESETS) {
+  activeEditor.value = 'json'
+  jsonInput.value = JSON.stringify(PRESETS[name], undefined, 2)
+}
 
-  const hash = encodeState()
-  window.history.replaceState(null, '', `#${hash}`)
-}, 300)
+async function loadLibraries() {
+  tokenizer.value = await import('gpt-tokenizer')
+  yaml.value = await import('yaml')
+  papa.value = await import('papaparse')
+  syncOutputs()
+}
 
-watch([jsonInput, delimiter, indent], () => {
-  updateUrl()
-})
-
-onMounted(() => {
-  loadTokenizer()
-
+function restoreState() {
   const hash = window.location.hash.slice(1)
   if (!hash)
     return
@@ -153,37 +333,37 @@ onMounted(() => {
     delimiter.value = state.delimiter
     indent.value = state.indent
   }
+}
+
+function updateEditorInput(formatId: string, value: string) {
+  if (formatId === 'json') {
+    jsonInput.value = value
+  }
+  else if (formatId === 'yaml') {
+    yamlInput.value = value
+  }
+  else if (formatId === 'csv') {
+    csvInput.value = value
+  }
+}
+
+function handleEditorFocus(formatId: string) {
+  if (formatId === 'json' || formatId === 'yaml' || formatId === 'csv') {
+    activeEditor.value = formatId
+  }
+}
+
+// Watchers
+watch([jsonInput, delimiter, indent], updateUrl)
+watch(jsonInput, syncOutputs)
+watch(yamlInput, () => activeEditor.value === 'yaml' && parseInput.yaml(yamlInput.value))
+watch(csvInput, () => activeEditor.value === 'csv' && parseInput.csv(csvInput.value))
+
+// Lifecycle
+onMounted(() => {
+  loadLibraries()
+  restoreState()
 })
-
-function encodeState() {
-  const state: PlaygroundState = {
-    json: jsonInput.value,
-    delimiter: delimiter.value,
-    indent: indent.value,
-  }
-
-  const compressedData = zlibSync(stringToUint8Array(JSON.stringify(state)))
-  return uint8ArrayToBase64(compressedData, { urlSafe: true })
-}
-
-function decodeState(hash: string) {
-  try {
-    const bytes = base64ToUint8Array(hash)
-    const decompressedData = unzlibSync(bytes)
-    const decodedData = uint8ArrayToString(decompressedData)
-    if (decodedData)
-      return JSON.parse(decodedData) as PlaygroundState
-  }
-  catch {}
-}
-
-function loadPreset(name: keyof typeof PRESETS) {
-  jsonInput.value = JSON.stringify(PRESETS[name], undefined, 2)
-}
-
-async function loadTokenizer() {
-  tokenizer.value ??= await import('gpt-tokenizer')
-}
 </script>
 
 <template>
@@ -192,14 +372,18 @@ async function loadTokenizer() {
       <!-- Header -->
       <header class="playground-header">
         <h1>Playground</h1>
-        <p>Experiment with JSON to TOON encoding in real-time.</p>
+        <p>Experiment with JSON, YAML, CSV and TOON encoding in real-time.</p>
       </header>
 
       <!-- Options Bar -->
       <div class="options-bar">
         <VPInput id="delimiter" label="Delimiter">
           <select id="delimiter" v-model="delimiter">
-            <option v-for="opt in DELIMITER_OPTIONS" :key="opt.value" :value="opt.value">
+            <option
+              v-for="opt in DELIMITER_OPTIONS"
+              :key="opt.value"
+              :value="opt.value"
+            >
               {{ opt.label }}
             </option>
           </select>
@@ -216,21 +400,19 @@ async function loadTokenizer() {
         </VPInput>
 
         <VPInput id="preset" label="Preset">
-          <select id="preset" @change="(e) => loadPreset((e.target as HTMLSelectElement).value as keyof typeof PRESETS)">
+          <select
+            id="preset"
+            @change="(e) => loadPreset((e.target as HTMLSelectElement).value as keyof typeof PRESETS)"
+          >
             <option value="" disabled selected>
               Load example...
             </option>
-            <option value="hikes">
-              Hikes (mixed structure)
-            </option>
-            <option value="orders">
-              Orders (nested objects)
-            </option>
-            <option value="metrics">
-              Metrics (tabular data)
-            </option>
-            <option value="events">
-              Events (semi-uniform)
+            <option
+              v-for="(_, key) in PRESETS"
+              :key="key"
+              :value="key"
+            >
+              {{ key.charAt(0).toUpperCase() + key.slice(1) }}
             </option>
           </select>
         </VPInput>
@@ -241,60 +423,62 @@ async function loadTokenizer() {
           :aria-label="hasCopiedUrl ? 'Link copied!' : 'Copy shareable URL'"
           @click="copyShareUrl"
         >
-          <span class="vpi-link" :class="[hasCopiedUrl && 'check']" aria-hidden="true" />
+          <span class="icon" :class="[hasCopiedUrl && 'check']" aria-hidden="true" />
           {{ hasCopiedUrl ? 'Copied!' : 'Share' }}
         </button>
       </div>
 
       <!-- Editor Container -->
       <div class="editor-container">
-        <!-- JSON Input -->
-        <div class="editor-pane">
-          <div class="pane-header">
-            <span class="pane-title">JSON Input</span>
-            <span class="pane-stats">
-              <span>{{ jsonTokens ?? '...' }} tokens</span>
-              <span>{{ jsonInput.length }} chars</span>
-            </span>
-          </div>
-          <textarea
-            id="json-input"
-            v-model="jsonInput"
-            class="editor-textarea"
-            spellcheck="false"
-            aria-label="JSON input"
-            :aria-describedby="error ? 'json-error' : undefined"
-            :aria-invalid="!!error"
-            placeholder="Enter JSON here..."
-          />
-        </div>
-
-        <!-- TOON Output -->
-        <div class="editor-pane">
+        <div
+          v-for="format in formats"
+          :key="format.id"
+          class="editor-pane"
+        >
           <div class="pane-header">
             <span class="pane-title">
-              TOON Output
-              <span v-if="tokenSavings" class="savings-badge" :class="[!tokenSavings.isSavings && 'increase']">
-                {{ tokenSavings.sign }}{{ tokenSavings.percent }}%
+              {{ format.title }}
+              <span v-if="format.savings" class="savings-badge" :class="[!format.savings.isSavings && 'increase']">
+                {{ format.savings.sign }}{{ format.savings.percent }}%
               </span>
             </span>
             <span class="pane-stats">
-              <span>{{ toonTokens ?? '...' }} tokens</span>
-              <span>{{ toonOutput.length }} chars</span>
+              <span>{{ format.tokens ?? '...' }} tokens</span>
+              <span>{{ format.output.length }} chars</span>
             </span>
           </div>
-          <div class="editor-output">
-            <button
-              v-if="!error"
-              class="copy-button"
-              :class="[copied && 'copied']"
-              :aria-label="copied ? 'Copied to clipboard' : 'Copy to clipboard'"
-              :aria-pressed="copied"
-              @click="copy()"
+
+          <div v-if="format.editable" class="editor-content">
+            <textarea
+              :value="format.output"
+              class="editor-textarea"
+              spellcheck="false"
+              :aria-label="`${format.title} input`"
+              :aria-invalid="format.id === 'json' && !!parsedJson.error"
+              :placeholder="`Enter ${format.title} here...`"
+              @input="updateEditorInput(format.id, ($event.target as HTMLTextAreaElement).value)"
+              @focus="handleEditorFocus(format.id)"
             />
-            <pre v-if="!error"><code>{{ toonOutput }}</code></pre>
-            <div v-else id="json-error" role="alert" class="error-message">
-              {{ error }}
+            <div
+              v-if="format.id === 'json' && parsedJson.error"
+              class="error-message"
+              role="alert"
+            >
+              {{ parsedJson.error }}
+            </div>
+          </div>
+
+          <div v-else class="editor-output">
+            <button
+              v-if="format.id !== 'json'"
+              class="copy-button"
+              :class="{ copied: clipboardHooks[format.id as keyof typeof clipboardHooks]?.copied.value }"
+              :disabled="!!parsedJson.error || !format.output"
+              @click="clipboardHooks[format.id as keyof typeof clipboardHooks]?.copy()"
+            />
+            <pre v-if="!parsedJson.error"><code>{{ format.output }}</code></pre>
+            <div v-else class="error-message" role="alert">
+              {{ parsedJson.error }}
             </div>
           </div>
         </div>
@@ -303,21 +487,17 @@ async function loadTokenizer() {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .playground {
   padding: 32px 24px 96px;
   min-height: 100vh;
   background: var(--vp-c-bg);
-}
 
-@media (min-width: 768px) {
-  .playground {
+  @media (min-width: 768px) {
     padding: 48px 32px 128px;
   }
-}
 
-@media (min-width: 960px) {
-  .playground {
+  @media (min-width: 960px) {
     padding: 48px 32px 0;
   }
 }
@@ -329,27 +509,25 @@ async function loadTokenizer() {
 
 .playground-header {
   margin-bottom: 24px;
-}
 
-.playground-header h1 {
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 40px;
-  color: var(--vp-c-text-1);
-  margin: 0 0 8px;
-}
+  h1 {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 40px;
+    color: var(--vp-c-text-1);
+    margin: 0 0 8px;
 
-@media (min-width: 768px) {
-  .playground-header h1 {
-    font-size: 32px;
+    @media (min-width: 768px) {
+      font-size: 32px;
+    }
   }
-}
 
-.playground-header p {
-  font-size: 16px;
-  line-height: 28px;
-  color: var(--vp-c-text-2);
+  p {
+    font-size: 16px;
+    line-height: 28px;
+    color: var(--vp-c-text-2);
+  }
 }
 
 .options-bar {
@@ -362,22 +540,6 @@ async function loadTokenizer() {
   background: var(--vp-c-bg-soft);
   border-radius: 8px;
   border: 1px solid var(--vp-c-divider);
-}
-
-.vpi-link {
-  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E");
-  display: inline-block;
-  width: 1em;
-  height: 1em;
-  -webkit-mask: var(--icon) no-repeat;
-  mask: var(--icon) no-repeat;
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
-  background-color: currentColor;
-}
-
-.vpi-link.check {
-  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
 }
 
 .share-button {
@@ -394,32 +556,44 @@ async function loadTokenizer() {
   border-radius: 6px;
   transition: border-color 0.25s, color 0.25s;
   margin-left: auto;
-}
 
-.share-button:hover {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1);
-}
+  &:hover {
+    border-color: var(--vp-c-brand-1);
+    color: var(--vp-c-brand-1);
+  }
 
-.share-button:focus-visible {
-  outline: 2px solid var(--vp-c-brand-1);
-  outline-offset: 2px;
-}
+  &:focus-visible {
+    outline: 2px solid var(--vp-c-brand-1);
+    outline-offset: 2px;
+  }
 
-.share-button.copied {
-  border-color: var(--vp-c-green-1);
-  color: var(--vp-c-green-1);
+  &.copied {
+    border-color: var(--vp-c-green-1);
+    color: var(--vp-c-green-1);
+  }
+
+  .icon {
+    --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E");
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    mask: var(--icon) no-repeat;
+    mask-size: 100% 100%;
+    background-color: currentColor;
+
+    &.check {
+      --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='currentColor' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' viewBox='0 0 24 24'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+    }
+  }
 }
 
 .editor-container {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
   min-height: 500px;
-}
 
-@media (max-width: 768px) {
-  .editor-container {
+  @media (max-width: 768px) {
     grid-template-columns: 1fr;
   }
 }
@@ -432,10 +606,10 @@ async function loadTokenizer() {
   overflow: hidden;
   background: var(--vp-c-bg-soft);
   transition: border-color 0.25s;
-}
 
-.editor-pane:focus-within {
-  border-color: var(--vp-c-brand-1);
+  &:focus-within {
+    border-color: var(--vp-c-brand-1);
+  }
 }
 
 .pane-header {
@@ -480,11 +654,48 @@ async function loadTokenizer() {
   border-radius: 4px;
   text-transform: none;
   letter-spacing: normal;
-}
 
-.savings-badge.increase {
+  &.increase {
   color: var(--vp-c-yellow-1);
   background: var(--vp-c-yellow-soft);
+}
+
+}
+
+.editor-content,
+.editor-output {
+  position: relative;
+  flex: 1;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+.editor-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-textarea {
+  flex: 1;
+  resize: none;
+  padding: 16px;
+  color: var(--vp-c-text-1);
+  background: var(--vp-c-bg);
+  border: none;
+  outline: none;
+}
+
+.editor-output {
+  overflow: auto;
+  background: var(--vp-code-block-bg);
+
+  pre {
+    margin: 0;
+    padding: 16px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
 }
 
 .copy-button {
@@ -492,18 +703,61 @@ async function loadTokenizer() {
   top: 12px;
   right: 12px;
   z-index: 3;
-  border: 1px solid var(--vp-code-copy-code-border-color);
-  border-radius: 4px;
   width: 40px;
   height: 40px;
+  border: 1px solid var(--vp-code-copy-code-border-color);
+  border-radius: 4px;
   background-color: var(--vp-code-copy-code-bg);
-  opacity: 0;
-  cursor: pointer;
   background-image: var(--vp-icon-copy);
   background-position: 50%;
   background-size: 20px;
   background-repeat: no-repeat;
+  opacity: 0;
+  cursor: pointer;
   transition: border-color 0.25s, background-color 0.25s, opacity 0.25s;
+
+  &:hover:not(:disabled),
+  &.copied {
+    border-color: var(--vp-code-copy-code-hover-border-color);
+    background-color: var(--vp-code-copy-code-hover-bg);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--vp-c-brand-1);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  &.copied {
+    border-radius: 0 4px 4px 0;
+    background-image: var(--vp-icon-copied);
+
+    &::before {
+      content: var(--vp-code-copy-copied-text-content);
+      position: relative;
+      top: -1px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: fit-content;
+      height: 40px;
+      padding: 0 10px;
+      transform: translateX(calc(-100% - 1px));
+      border: 1px solid var(--vp-code-copy-code-hover-border-color);
+      border-right: 0;
+      border-radius: 4px 0 0 4px;
+      background-color: var(--vp-code-copy-code-hover-bg);
+      color: var(--vp-code-copy-code-active-text);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      text-align: center;
+    }
+  }
 }
 
 .editor-output:hover .copy-button,
@@ -511,85 +765,10 @@ async function loadTokenizer() {
   opacity: 1;
 }
 
-.copy-button:hover:not(:disabled),
-.copy-button.copied {
-  border-color: var(--vp-code-copy-code-hover-border-color);
-  background-color: var(--vp-code-copy-code-hover-bg);
-}
-
-.copy-button:focus-visible {
-  outline: 2px solid var(--vp-c-brand-1);
-  outline-offset: 2px;
-}
-
-.copy-button:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.copy-button.copied,
-.copy-button:hover.copied {
-  border-radius: 0 4px 4px 0;
-  background-image: var(--vp-icon-copied);
-}
-
-.copy-button.copied::before,
-.copy-button:hover.copied::before {
-  position: relative;
-  top: -1px;
-  transform: translateX(calc(-100% - 1px));
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  border: 1px solid var(--vp-code-copy-code-hover-border-color);
-  border-right: 0;
-  border-radius: 4px 0 0 4px;
-  padding: 0 10px;
-  width: fit-content;
-  height: 40px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--vp-code-copy-code-active-text);
-  background-color: var(--vp-code-copy-code-hover-bg);
-  white-space: nowrap;
-  content: var(--vp-code-copy-copied-text-content);
-}
-
-.copy-button[aria-pressed="true"] {
-  opacity: 1;
-}
-
-.editor-textarea,
-.editor-output {
-  flex: 1;
-  padding: 16px;
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.875rem;
-  line-height: 1.7;
-}
-
-.editor-textarea {
-  resize: none;
-  color: var(--vp-c-text-1);
-  background: var(--vp-c-bg);
-}
-
-.editor-output {
-  position: relative;
-  overflow: auto;
-  background: var(--vp-code-block-bg);
-}
-
-.editor-output pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
 .error-message {
-  color: var(--vp-c-danger-1);
   padding: 8px 12px;
+  margin: 16px;
+  color: var(--vp-c-danger-1);
   background: var(--vp-c-danger-soft);
   border-radius: 4px;
   font-size: 0.875rem;

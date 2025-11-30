@@ -7,12 +7,17 @@
     "build": "vitepress build",
     "preview": "vitepress preview"
   },
-  "devDependencies": {
-    "@vueuse/core": "^14.1.0",
+  "dependencies": {
     "fflate": "^0.8.2",
     "gpt-tokenizer": "^3.4.0",
-    "markdown-it-mathjax3": "^4.3.2",
+    "papaparse": "^5.5.3",
     "uint8array-extras": "^1.5.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@vueuse/core": "^14.1.0",
+    "markdown-it-mathjax3": "^4.3.2",
+    "sass-embedded": "^1.93.3",
     "unocss": "^66.5.9",
     "vitepress": "^1.6.4",
     "vitepress-plugin-llms": "^1.9.3"
