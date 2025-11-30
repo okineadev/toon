@@ -489,18 +489,18 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .playground {
-  padding: 32px 24px 96px;
-  min-height: 100vh;
-  background: var(--vp-c-bg);
+  padding: 32px 24px 32px;
 
   @media (min-width: 768px) {
-    padding: 48px 32px 128px;
-  }
+    .playground {
+      padding: 48px 32px 48px;
+    }
 
   @media (min-width: 960px) {
-    padding: 48px 32px 0;
+    .playground {
+      padding: 48px 32px 48px;
+    }
   }
-}
 
 .playground-container {
   max-width: 1400px;
@@ -591,7 +591,6 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
-  min-height: 500px;
 
   @media (max-width: 768px) {
     grid-template-columns: 1fr;
@@ -601,11 +600,16 @@ onMounted(() => {
 .editor-pane {
   display: flex;
   flex-direction: column;
+  min-height: 500px;
   border: 1px solid var(--vp-c-divider);
   border-radius: 8px;
   overflow: hidden;
   background: var(--vp-c-bg-soft);
   transition: border-color 0.25s;
+
+  @media (max-width: 768px) {
+    min-height: 400px;
+  }
 
   &:focus-within {
     border-color: var(--vp-c-brand-1);
@@ -693,8 +697,7 @@ onMounted(() => {
   pre {
     margin: 0;
     padding: 16px;
-    white-space: pre-wrap;
-    word-break: break-all;
+    white-space: pre;
   }
 }
 
